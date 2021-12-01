@@ -1,30 +1,15 @@
 var express = require('express');
 var router = express.Router();
 
-const axios = require('axios');
-const fs = require('fs');
-
 const apiRates = require("../lib/rates.js");
-
-const key = "d5b3461079a1830e5be8975f5c9ac877";
-
 
 router.param("name", function(req, res, next, value) {
 console.log("ValiDate");
 	const is_valid = value === "symbols" ||
 		apiRates.checkDate(value);
 
-	if (!is_valid) {
-		var o = {
-			"error": {
-				"code": "invalid_date",
-				"message": "You have entered an invalid date. [Required format: date=YYYY-MM-DD]"
-			}
-		};
-		res.send(o);
-	} else {
-		next();
-	}
+	next(is_valid ? null :
+		Error("You have entered an invalid date. [Required format: date=YYYY-MM-DD]"));
 });
 
 router.get("/fluctuation", function(req, res, next) {
@@ -46,36 +31,25 @@ router.get("/fluctuation", function(req, res, next) {
 			err = "Range between start_date and end_date must be within " + limit + " days";
 		}
 	}
-
 	if (err) {
-		return res
-		.status(400)
-		.send(err);
+		return next(Error(err));
 	}
 
 	if (sym) {
-		apiRates.ratesByDate("symbols")
+		return apiRates.ratesByDate("symbols")
 		.then(function(data) {
 			if (!sym.split(",")
 				.every((s) => data["symbols"][s])) {
-				return Promise.reject();
+				next(Error("Invalid symbols"));
 			}
 			next();
-		}, () => Promise.reject()
-		)
-		.catch(function(err) {
-			o = {
-				"error": {
-					"message": "Invalid symbols"
-				}
-			};
-			return res
-			.status(400)
-			.send(o);
+		}, function(err) {
+			// TODO: Any more info?
+			next(Error((err && err.message) || "Internal Error"));
 		});
-	} else {
-		next();
 	}
+
+	next();
 }, function(req, res, next) {
 	const st = req.query.start_date;
 	const ed = req.query.end_date;
@@ -112,11 +86,10 @@ router.get("/fluctuation", function(req, res, next) {
 			return v;
 		});
 
-		return res.send(data);
+		return res.json(data);
 	}, (err) => {
-		res
-		.status(400)
-		.send(err);
+		// TODO: Any more info?
+		next(Error((err && err.message) || "Internal Error"));
 	});
 });
 
@@ -127,55 +100,28 @@ router.get("/convert", function(req, res, next) {
 	const amount = +req.query.amount;
 
 	if (from !== "EUR") {
-		o = {
-			"error": {
-				"message": "Invalid from (Support is limited to EUR)"
-			}
-		};
-		return res
-		.status(400)
-		.send(o);
+		return next(Error("Invalid from (Support is limited to EUR)"));
 	}
 
 	apiRates.ratesByDate("symbols")
 	.then(function(data) {
-		if (data["symbols"][to]) {
-			next();
-		} else {
-			return Promise.reject("Invalid to");
-		}
-	})
-	.catch(function(err) {
-		o = {
-			"error": {
-				"message": "Invalid to"
-			}
-		};
-		return res
-		.status(400)
-		.send(o);
+		next(data["symbols"][to] ? null :
+			Error("Invalid to"));
+	}, function(err) {
+		// TODO: Any more info?
+		next(Error((err && err.message) || "Internal Error"));
 	});
 }, function(req, res, next) {
 	const date = req.query.date;
 
-	if (date &&
-		!apiRates.checkDate(date)) {
-		o = {
-			"error": {
-				"message": "Invalid date"
-			}
-		};
-		return res
-		.status(400)
-		.send(o);
-	}
-	next();
+	next(!date || apiRates.checkDate(date) ? null :
+		Error("Invalid date"));
 }, function(req, res, next) {
 
 	const from = req.query.from || "EUR";
 	const to = req.query.to;
 	const amount = +req.query.amount;
-	const date = req.query.date || "2021-11-22";	// For development, use a fixed single date rate.
+	const date = req.query.date || "latest";
 
 	apiRates.ratesByDate(date)
 	.then(function(data) {
@@ -193,12 +139,9 @@ router.get("/convert", function(req, res, next) {
 			o["historial"] = data["historial"];
 			o["date"] = data["date"];
 		}
-		res.send(o);
-		return;
+		res.json(o);
 	}, function(err) {
-		return res
-		.status(400)
-		.send("Failure to convert");
+		next(Error((err && err.message) || "Internal Error"));
 	});
 });
 
@@ -207,19 +150,29 @@ router.get("/:name", function(req, res, next) {
 
 	apiRates.ratesByDate(name)
 	.then(function(data) {
-		res.setHeader('Content-Type', 'application/json');
-		res.send(data);
+		res.json(data);
+	}, (err) => {
+		next(Error((err && err.message) || "Internal Error"));
 	});
 });
 
-router.get("/", function(req, res, next) {
-	var	o = {
-			"error": {
-				"code": "invalid_api"
-			}
-		};
+router.get("*", function(req, res, next) {
+	return res.status(404).json({
+		"error": {
+			"code": "invalid_api"
+		}
+	});
+});
 
-	res.send(o);
+router.use(function(err, req, res, next) {
+	res
+	.status(err.status || 505)
+	.json({
+		"error": {
+			"code": err.code || "api_error",
+			"message": err.message || ""
+		}
+	});
 });
 
 module.exports = router;
